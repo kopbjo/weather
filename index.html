@@ -246,14 +246,14 @@ function render(id, p){
           <div class="p">${h.rain > 0 ? mm(h.rain) : ""}</div><div class="h">${String(hourOf(h.time)).padStart(2, "0")}</div></div>`;
       }).join("")}</div>
     </div></div>
-    ${PLACES[id].tide ? `<h2>Tidevann neste døgn</h2><div id="tide"><p class="note">Henter tidevann …</p></div>` : ""}
     <h2>De neste dagene</h2>
     <ul class="days">${days.map(d => {
       const sy = symbol(d.sym);
       return `<li><span class="d">${dayLabel(d)}</span><span class="e" title="${sy.t}">${sy.e}</span>
         <span class="mm">${deg(d.max)}<span class="lo">${deg(d.min)}</span></span>
         <span class="r">${d.rain >= 0.05 ? mm(d.rain) + " mm" : ""}</span></li>`;
-    }).join("")}</ul>`;
+    }).join("")}</ul>
+    ${PLACES[id].tide ? `<h2>Tidevann neste døgn</h2><div id="tide"><p class="note">Henter tidevann …</p></div>` : ""}`;
   if (PLACES[id].tide){ const c = store.get("tide:" + id); if (c) renderTide(c.events); }
 }
 
