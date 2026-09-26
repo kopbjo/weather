@@ -77,6 +77,14 @@ h2{font-size:15px;font-weight:600;color:var(--muted);margin:30px 0 8px}
 .days .mm .lo{font-weight:400;margin-left:8px}
 .days .r{text-align:right;color:var(--rain);font-size:14px}
 
+.tides{list-style:none;margin:0;padding:0;background:var(--surface);border:1px solid var(--line);border-radius:14px}
+.tides li{display:grid;grid-template-columns:26px 1fr auto auto;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid var(--line)}
+.tides li:first-child{border-top:0}
+.tides .ic{color:var(--rain);font-size:18px;text-align:center}
+.tides .k{font-weight:500}
+.tides .tt{font-weight:600;white-space:nowrap}
+.tides .cm{color:var(--muted);min-width:64px;text-align:right}
+.note{color:var(--muted);font-size:14px;margin:8px 2px 0}
 footer{margin-top:24px;color:var(--muted);font-size:14px;display:flex;flex-direction:column;gap:10px}
 .status{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .refresh{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:7px 14px;font-weight:600;cursor:pointer}
@@ -95,14 +103,14 @@ footer a{color:inherit}
   <div id="view"><p class="skeleton">Henter varsel …</p></div>
   <footer>
     <div class="status"><span id="updated"></span><button class="refresh" id="refresh">Oppdater</button></div>
-    <span>Data fra <a href="https://www.met.no/">MET Norway</a>, samme varsel som på <a href="https://www.yr.no/">yr.no</a>. Lisens CC BY 4.0.</span>
+    <span>Data fra <a href="https://www.met.no/">MET Norway</a>, samme varsel som på <a href="https://www.yr.no/">yr.no</a>. Tidevann fra <a href="https://www.kartverket.no/til-sjos/se-havniva">Kartverket</a>. Lisens CC BY 4.0.</span>
   </footer>
 </main>
 <script>
 (() => {
 const PLACES = {
   trd:  { name: "Trondheim", lat: 63.43, lon: 10.50 },
-  olve: { name: "Ølve",      lat: 60.01, lon: 5.81 }
+  olve: { name: "Ølve",      lat: 60.01, lon: 5.81, tide: true }
 };
 const TZ = "Europe/Oslo";
 const fHourNum = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: TZ });
@@ -238,6 +246,7 @@ function render(id, p){
           <div class="p">${h.rain > 0 ? mm(h.rain) : ""}</div><div class="h">${String(hourOf(h.time)).padStart(2, "0")}</div></div>`;
       }).join("")}</div>
     </div></div>
+    ${PLACES[id].tide ? `<h2>Tidevann neste døgn</h2><div id="tide"><p class="note">Henter tidevann …</p></div>` : ""}
     <h2>De neste dagene</h2>
     <ul class="days">${days.map(d => {
       const sy = symbol(d.sym);
@@ -245,6 +254,76 @@ function render(id, p){
         <span class="mm">${deg(d.max)}<span class="lo">${deg(d.min)}</span></span>
         <span class="r">${d.rain >= 0.05 ? mm(d.rain) + " mm" : ""}</span></li>`;
     }).join("")}</ul>`;
+  if (PLACES[id].tide){ const c = store.get("tide:" + id); if (c) renderTide(c.events); }
+}
+
+// ---- Tidevann (Kartverket), kun for steder med tide: true ----
+const TIDE_POINTS = [[60.01, 5.81], [60.00, 5.80], [59.99, 5.80], [60.00, 5.83], [60.02, 5.79]];
+const fTideTime = new Intl.DateTimeFormat("nb-NO", { hour: "2-digit", minute: "2-digit", timeZone: TZ });
+function tideUrl(lat, lon){
+  // tzone=1 uses norsk normaltid in the request window; pad the window generously
+  const from = new Date(Date.now() + 3600e3 - 3 * 3600e3).toISOString().slice(0, 16);
+  const to = new Date(Date.now() + 3600e3 + 34 * 3600e3).toISOString().slice(0, 16);
+  return `https://vannstand.kartverket.no/tideapi.php?tide_request=locationdata&lat=${lat}&lon=${lon}` +
+    `&fromtime=${from}&totime=${to}&datatype=tab&refcode=cd&lang=nb&interval=60&dst=1&tzone=1`;
+}
+function parseTide(xml){
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const wl = [...doc.querySelectorAll("waterlevel")].map(n => ({
+    time: new Date(n.getAttribute("time")), value: parseFloat(n.getAttribute("value")),
+    flag: (n.getAttribute("flag") || "").toLowerCase()
+  })).filter(x => !isNaN(x.time) && !isNaN(x.value)).sort((a, b) => a.time - b.time);
+  // classify high/low from flag, or from neighbours if the flag is missing
+  wl.forEach((x, i) => {
+    if (x.flag.includes("high")) x.kind = "high";
+    else if (x.flag.includes("low")) x.kind = "low";
+    else { const o = wl[i + 1] || wl[i - 1]; x.kind = o && x.value > o.value ? "high" : "low"; }
+  });
+  return wl;
+}
+async function fetchTide(){
+  for (const [lat, lon] of TIDE_POINTS){
+    const res = await fetch(tideUrl(lat, lon));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const events = parseTide(await res.text());
+    if (events.length) return events.map(e => ({ t: e.time.getTime(), v: e.value, k: e.kind }));
+  }
+  throw new Error("nodata");
+}
+function renderTide(events){
+  const el = document.getElementById("tide");
+  if (!el) return;
+  const now = Date.now();
+  const future = events.filter(e => e.t > now);
+  const highs = future.filter(e => e.k === "high").slice(0, 2);
+  const lows = future.filter(e => e.k === "low").slice(0, 2);
+  const list = [...highs, ...lows].sort((a, b) => a.t - b.t);
+  if (list.length < 4 && !future.length){ el.innerHTML = '<p class="note">Fant ikke tidevann for de neste timene. Trykk Oppdater.</p>'; return; }
+  const todayKey = keyOf(new Date());
+  el.innerHTML = `<ul class="tides">${list.map(e => {
+    const d = new Date(e.t), day = keyOf(d) === todayKey ? "I dag" : "I morgen";
+    return `<li><span class="ic" aria-hidden="true">${e.k === "high" ? "▲" : "▼"}</span>
+      <span class="k">${e.k === "high" ? "Høyvann" : "Lavvann"}</span>
+      <span class="tt">${day} ${fTideTime.format(d)}</span><span class="cm">${Math.round(e.v)} cm</span></li>`;
+  }).join("")}</ul><p class="note">Høyde over sjøkartnull, som i tidevannstabellene.</p>`;
+}
+async function loadTide(id, force){
+  if (!PLACES[id].tide) return;
+  const cached = store.get("tide:" + id);
+  const fresh = cached && Date.now() - cached.ts < 3 * 3600e3 &&
+    cached.events.filter(e => e.t > Date.now()).length >= 4;
+  if (cached) renderTide(cached.events);
+  if (fresh && !force) return;
+  try {
+    const events = await fetchTide();
+    store.set("tide:" + id, { ts: Date.now(), events });
+    if (id === current) renderTide(events);
+  } catch (e) {
+    if (id === current && !cached){
+      const el = document.getElementById("tide");
+      if (el) el.innerHTML = '<p class="note">Fikk ikke hentet tidevann fra Kartverket. Trykk Oppdater for å prøve igjen.</p>';
+    }
+  }
 }
 
 let current = store.get("wx:place") || "trd";
@@ -280,11 +359,11 @@ async function load(id, force){
 function select(id){
   current = id; store.set("wx:place", id);
   document.querySelectorAll(".switch button").forEach(b => b.setAttribute("aria-selected", b.dataset.id === id));
-  load(id);
+  load(id).then(() => loadTide(id));
 }
 document.querySelectorAll(".switch button").forEach(b => b.addEventListener("click", () => select(b.dataset.id)));
-document.getElementById("refresh").addEventListener("click", () => load(current, true));
-document.addEventListener("visibilitychange", () => { if (!document.hidden) load(current); });
+document.getElementById("refresh").addEventListener("click", () => load(current, true).then(() => loadTide(current, true)));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(current).then(() => loadTide(current)); });
 select(current);
 })();
 </script>
